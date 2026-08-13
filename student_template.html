@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>我的阅读理解批改</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+     background:#f4f6f8;color:#1a1a1a;line-height:1.7;padding:16px}
+.wrap{max-width:720px;margin:0 auto}
+h1{font-size:20px;margin-bottom:4px}
+.sub{color:#666;font-size:13px;margin-bottom:20px}
+.card{background:#fff;border-radius:10px;padding:16px;margin-bottom:14px;
+      box-shadow:0 1px 3px rgba(0,0,0,.08)}
+input{width:100%;padding:12px;font-size:17px;border:1px solid #ccc;border-radius:8px}
+button{width:100%;padding:12px;font-size:16px;background:#2563eb;color:#fff;
+       border:none;border-radius:8px;margin-top:10px;cursor:pointer}
+button.ghost{background:#eef2f7;color:#334;font-size:13px;padding:8px;width:auto;margin-top:8px}
+.qhead{display:flex;justify-content:space-between;align-items:baseline;
+       border-bottom:1px solid #eee;padding-bottom:8px;margin-bottom:10px}
+.qno{font-weight:700}
+.score{font-size:20px;font-weight:700;color:#2563eb}
+.label{font-size:12px;color:#888;margin:12px 0 4px}
+.mine{background:#f8f9fa;border-left:3px solid #94a3b8;padding:10px;
+      white-space:pre-wrap;border-radius:0 6px 6px 0}
+.miss{background:#fff7ed;border-left:3px solid #fb923c;padding:10px;border-radius:0 6px 6px 0}
+.why{background:#eff6ff;border-left:3px solid #2563eb;padding:10px;border-radius:0 6px 6px 0}
+.fix{background:#f0fdf4;border-left:3px solid #16a34a;padding:10px;border-radius:0 6px 6px 0}
+.tag{display:inline-block;background:#e2e8f0;border-radius:99px;padding:2px 10px;
+     font-size:12px;margin:3px 4px 0 0}
+.total{text-align:center;padding:18px}
+.total .n{font-size:38px;font-weight:700;color:#2563eb}
+.err{color:#c00;font-size:14px;margin-top:8px}
+@media print{button,.noprint{display:none}body{background:#fff}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="title">阅读理解批改</h1>
+  <div class="sub">输入老师给你的 6 位取件码，查看自己的批改</div>
+
+  <div class="card" id="login">
+    <input id="code" type="tel" inputmode="numeric" maxlength="6" placeholder="6 位取件码">
+    <button onclick="open_()">查看我的批改</button>
+    <div class="err" id="err"></div>
+  </div>
+
+  <div id="report"></div>
+</div>
+
+<script>
+const DATA = __DATA__;
+document.getElementById('title').textContent = DATA.title || '阅读理解批改';
+
+function esc(s){return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+function open_(){
+  const code = document.getElementById('code').value.trim();
+  const stu = DATA.students[code];
+  if(!stu){ document.getElementById('err').textContent = '取件码不对，再看一下老师给你的纸条。'; return; }
+  document.getElementById('login').style.display='none';
+  render(stu);
+}
+
+function render(stu){
+  const qmap = {}; (DATA.questions||[]).forEach(q=>qmap[q.qid]=q);
+  const items = stu.items.slice().sort((a,b)=>String(a.qid).localeCompare(String(b.qid),'zh'));
+  let got=0, full=0;
+  items.forEach(i=>{got+=(i.score||0); full+=(i.max||0);});
+
+  let h = '<div class="card total"><div class="n">'+got+' / '+full+'</div>'
+        + '<div class="sub" style="margin:0">这是诊断分数，不计入成绩。看下面的分析比看分数有用。</div></div>';
+
+  items.forEach(it=>{
+    const q = qmap[it.qid] || {};
+    h += '<div class="card">';
+    h += '<div class="qhead"><span class="qno">第 '+esc(it.qid)+' 题</span>'
+       + '<span class="score">'+(it.score||0)+' / '+(it.max||0)+'</span></div>';
+    if(q.stem) h += '<div style="font-size:14px;color:#444">'+esc(q.stem)+'</div>';
+
+    h += '<div class="label">你的答案（AI 读出来的）</div>';
+    h += '<div class="mine">'+(it.transcript ? esc(it.transcript) : '（空白，没作答）')+'</div>';
+    h += '<button class="ghost noprint" onclick="wrong(this)">AI 读错了？点这里</button>';
+
+    if((it.missed||[]).length){
+      h += '<div class="label">你漏掉的要点</div><div class="miss">';
+      it.missed.forEach(m=>{ h += '· '+esc(typeof m==='object'? (m.text||'') : m)+'<br>'; });
+      h += '</div>';
+    }
+    if((it.tags||[]).length){
+      h += '<div class="label">问题类型</div><div>';
+      it.tags.forEach(t=>{ h += '<span class="tag">'+esc(t)+' '+esc(DATA.tags[t]||'')+'</span>'; });
+      h += '</div>';
+    }
+    if(it.why){ h += '<div class="label">为什么错</div><div class="why">'+esc(it.why)+'</div>'; }
+    if(it.fix){ h += '<div class="label">下次怎么做</div><div class="fix">'+esc(it.fix)+'</div>'; }
+
+    (it.tags||[]).forEach(t=>{
+      const r = DATA.remedy[t];
+      if(!r) return;
+      h += '<div class="label">这类问题的练法</div><div class="fix">'
+         + '<b>根源：</b>'+esc(r.why)+'<br><b>方法：</b>'+esc(r.fix)
+         + '<br><b>练习：</b>'+esc(r.drill)+'</div>';
+    });
+    h += '</div>';
+  });
+
+  h += '<div class="card noprint"><button onclick="window.print()">打印这份报告</button></div>';
+  document.getElementById('report').innerHTML = h;
+  window.scrollTo(0,0);
+}
+
+function wrong(btn){
+  btn.outerHTML = '<div class="miss" style="margin-top:8px;font-size:14px">'
+    + '请把这一题截图，连同你写的正确内容一起发给老师，老师会改过来。</div>';
+}
+</script>
+</body>
+</html>
