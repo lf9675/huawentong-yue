@@ -1,6 +1,10 @@
+# 华文通·理 依赖
+# 2026-08-13：删掉 google-generativeai（改用 urllib 直调 Gemini REST），
+# 连带砍掉 grpcio / protobuf / google-api-core / google-auth / pydantic 整条链。
+# Python 版本请在 Streamlit Cloud 的 Advanced settings 里选 3.12：
+# numpy / pandas / psycopg2-binary 在 3.14 下没有预编译轮子，会现场编译导致构建卡死。
 streamlit==1.50.0
 anthropic==0.69.0
-google-generativeai==0.8.5
 pymupdf==1.26.4
 pillow==11.3.0
 numpy==2.2.6

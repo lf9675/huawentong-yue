@@ -12,12 +12,18 @@
 import base64
 import json
 import re
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import anthropic
-import google.generativeai as genai
 
 import prompts_yue as P
+
+# 2026-08-13 决策：删掉 google-generativeai 依赖，改用标准 HTTPS 接口。
+# 原因：该包硬锁 google-ai-generativelanguage==0.6.15，连带 grpcio/protobuf/
+# google-api-core 一整条重依赖链，是 Streamlit Cloud 构建卡死的高发原因。
+# 用标准库 urllib 直调，零第三方依赖。
 
 TRANSCRIBE_MODEL = "gemini-2.5-flash"
 GRADE_MODEL = "claude-sonnet-5"
@@ -130,15 +136,42 @@ def _claude(api_key, system, user_text, model=GRADE_MODEL):
     return out
 
 
+GEMINI_ENDPOINT = ("https://generativelanguage.googleapis.com/v1beta/models/"
+                   "{model}:generateContent")
+
+
+def _gemini_vision(api_key, prompt, image_bytes, model=TRANSCRIBE_MODEL, timeout=90):
+    """调 Gemini 视觉接口，只用标准库。返回纯文本。"""
+    body = json.dumps({
+        "contents": [{"parts": [
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/jpeg",
+                             "data": base64.b64encode(image_bytes).decode()}},
+        ]}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2048},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        GEMINI_ENDPOINT.format(model=model),
+        data=body,
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")[:200]
+        raise RuntimeError("Gemini HTTP " + str(e.code) + "：" + detail)
+    cands = payload.get("candidates") or []
+    if not cands:
+        raise RuntimeError("Gemini 无返回：" + json.dumps(payload)[:200])
+    parts = (cands[0].get("content") or {}).get("parts") or []
+    return "".join(p.get("text", "") for p in parts)
+
+
 def transcribe_one(gemini_key, image_bytes):
     """单题作答图 → {transcript, ocr_flag}"""
-    genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel(TRANSCRIBE_MODEL)
-    resp = model.generate_content([
-        P.TRANSCRIBE_PROMPT,
-        {"mime_type": "image/jpeg", "data": base64.b64encode(image_bytes).decode()},
-    ])
-    obj, layer = robust_json(resp.text or "")
+    text = _gemini_vision(gemini_key, P.TRANSCRIBE_PROMPT, image_bytes)
+    obj, layer = robust_json(text)
     return {"transcript": (obj.get("transcript") or "").strip(),
             "ocr_flag": obj.get("ocr_flag") or "uncertain",
             "_layer": layer}
