@@ -93,7 +93,7 @@ if st.button("🤖 生成／重新生成讲评底稿", type="primary"):
     questions = [{"qid": r["qid"], "stem": r["stem"], "max_score": r["max_score"],
                   "requirement": r["requirement"], "points": r["points"]} for r in qrows]
     with st.spinner("生成中…"):
-        diag = E.diagnose_class(st.secrets["claude_key"], a.get("passage") or "",
+        diag = E.diagnose_class(st.secrets["deepseek_key"], a.get("passage") or "",
                                 questions, class_rows)
     db.save_diagnosis(aid, diag)
     st.rerun()

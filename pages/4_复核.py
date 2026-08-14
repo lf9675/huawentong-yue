@@ -130,7 +130,7 @@ with st.container(border=True):
         per = {sid: {qid: (trans.get(sid, {}).get("transcript") or "")} for sid in
                {g["student_id"] for g in grades}}
         bar = st.progress(0.0)
-        out = E.grade_batch(st.secrets["claude_key"], a.get("passage") or "", one, per,
+        out = E.grade_batch(st.secrets["deepseek_key"], a.get("passage") or "", one, per,
                             progress=lambda d, t: bar.progress(d / t))
         for sid, items in out.items():
             for it in items:

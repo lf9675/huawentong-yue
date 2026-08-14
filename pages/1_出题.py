@@ -31,7 +31,7 @@ with st.container(border=True):
                        placeholder="Q26 永平不满是因为年轻人问路时态度无礼（1分）连一句谢谢都没说（1分）……")
     if st.button("🤖 拆给分点", type="primary", disabled=not raw.strip()):
         with st.spinner("拆解中…"):
-            qs, layer = E.extract_points(st.secrets["claude_key"], raw)
+            qs, layer = E.extract_points(st.secrets["deepseek_key"], raw)
         if not qs:
             st.error("没拆出题目（" + layer + "）。检查参考答案格式，或手动在下面填。")
         else:

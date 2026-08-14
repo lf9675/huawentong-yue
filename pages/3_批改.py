@@ -48,7 +48,7 @@ with st.container(border=True):
     st.write("待转录 " + str(len(tasks)) + " 题（未作答的已自动跳过，不消耗调用）")
     if tasks and st.button("▶ 开始转录", type="primary"):
         bar, log = st.progress(0.0), st.empty()
-        res = E.transcribe_batch(st.secrets["gemini_key"], tasks,
+        res = E.transcribe_batch(st.secrets["zhipu_key"], tasks,
                                  progress=lambda d, t: (bar.progress(d / t),
                                                         log.write("转录 " + str(d) + "/" + str(t))))
         fail = 0
@@ -74,7 +74,7 @@ with st.container(border=True):
     st.write("待评分 " + str(len(todo)) + " 人")
     if todo and st.button("▶ 开始评分", type="primary"):
         bar, log = st.progress(0.0), st.empty()
-        out = E.grade_batch(st.secrets["claude_key"], a.get("passage") or "",
+        out = E.grade_batch(st.secrets["deepseek_key"], a.get("passage") or "",
                             questions, todo,
                             progress=lambda d, t: (bar.progress(d / t),
                                                    log.write("评分 " + str(d) + "/" + str(t))))
