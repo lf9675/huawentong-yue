@@ -1,34 +1,37 @@
 # -*- coding: utf-8 -*-
 """华文通·理 —— 引擎调用层（无 Streamlit 依赖）
 
-转录：Gemini 2.5 Flash（视觉，便宜，跑一次存档）
-评分：Claude（判断力活）——必须用 messages.stream()，不用 create()
-诊断：Claude，全班一次调用
+转录：智谱 GLM-4V（视觉，便宜，跑一次存档）
+评分：DeepSeek（判断力活，与「华文通·改」同一模型，校准口径一致）
+诊断：DeepSeek，全班一次调用
 
-注：2026-08-13 查证，Classkick 无公开 API，导入只能走手动导出 ZIP。
-若日后开放，只需替换 splitter 的数据源，本文件不受影响。
+2026-08-13 决策：从 Gemini + Claude 换成 智谱 + DeepSeek。
+  原因：Claude 单价过高，无法支撑题海规模的大量批改。
+  代价：两家均为中国托管，PDPA 层面会阻碍学校统一采购。
+       将来若需换回非中国托管，只改本文件的 glm_vision() 与 deepseek_chat()，
+       上层五个页面一行不用动。
+两家都是 OpenAI 兼容接口，用标准库 urllib 直调，零第三方 SDK 依赖。
 """
 
 import base64
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import anthropic
-
 import prompts_yue as P
 
-# 2026-08-13 决策：删掉 google-generativeai 依赖，改用标准 HTTPS 接口。
-# 原因：该包硬锁 google-ai-generativelanguage==0.6.15，连带 grpcio/protobuf/
-# google-api-core 一整条重依赖链，是 Streamlit Cloud 构建卡死的高发原因。
-# 用标准库 urllib 直调，零第三方依赖。
+ZHIPU_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
-TRANSCRIBE_MODEL = "gemini-2.5-flash"
-GRADE_MODEL = "claude-sonnet-5"
+TRANSCRIBE_MODEL = "glm-4v-flash"    # 备选 glm-4v-plus（更准更贵）
+GRADE_MODEL = "deepseek-chat"
+GRADE_TEMPERATURE = 0.2              # 与「华文通·改」一致
 MAX_TOKENS = 8000
-CONCURRENCY = 6
+CONCURRENCY = 4                      # 智谱限流较紧，比 Gemini 保守
+RETRY = 3
 
 
 # ════════════════════════════════════════════════════════════
@@ -124,64 +127,92 @@ def robust_json(text, list_key=None):
 
 
 # ════════════════════════════════════════════════════════════
-# 调用
+# 调用：两家都是 OpenAI 兼容接口，共用一个底座
 # ════════════════════════════════════════════════════════════
-def _claude(api_key, system, user_text, model=GRADE_MODEL):
-    client = anthropic.Anthropic(api_key=api_key)
-    out = ""
-    with client.messages.stream(model=model, max_tokens=MAX_TOKENS, system=system,
-                                messages=[{"role": "user", "content": user_text}]) as s:
-        for chunk in s.text_stream:
-            out += chunk
-    return out
+def _chat(url, api_key, payload, timeout=180):
+    """流式 POST，逐块拼回文本。限流和 5xx 自动退避重试。"""
+    payload = dict(payload)
+    payload["stream"] = True
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json",
+               "Authorization": "Bearer " + api_key,
+               "Accept": "text/event-stream"}
+
+    last_err = ""
+    for attempt in range(RETRY):
+        try:
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            out = []
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                for raw in resp:
+                    line = raw.decode("utf-8", "ignore").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    chunk = line[5:].strip()
+                    if not chunk or chunk == "[DONE]":
+                        continue
+                    try:
+                        obj = json.loads(chunk)
+                    except ValueError:
+                        continue
+                    for ch in obj.get("choices") or []:
+                        piece = (ch.get("delta") or {}).get("content")
+                        if piece:
+                            out.append(piece)
+            text = "".join(out)
+            if text.strip():
+                return text
+            last_err = "返回为空"
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "ignore")[:200]
+            last_err = "HTTP " + str(e.code) + "：" + detail
+            if e.code not in (429, 500, 502, 503, 504):
+                raise RuntimeError(last_err)
+        except Exception as e:
+            last_err = str(e)[:200]
+        time.sleep(1.5 * (attempt + 1))
+    raise RuntimeError("重试 " + str(RETRY) + " 次仍失败｜" + last_err)
 
 
-GEMINI_ENDPOINT = ("https://generativelanguage.googleapis.com/v1beta/models/"
-                   "{model}:generateContent")
-
-
-def _gemini_vision(api_key, prompt, image_bytes, model=TRANSCRIBE_MODEL, timeout=90):
-    """调 Gemini 视觉接口，只用标准库。返回纯文本。"""
-    body = json.dumps({
-        "contents": [{"parts": [
-            {"text": prompt},
-            {"inline_data": {"mime_type": "image/jpeg",
-                             "data": base64.b64encode(image_bytes).decode()}},
+def glm_vision(api_key, prompt, image_bytes, model=TRANSCRIBE_MODEL):
+    """智谱 GLM-4V 读手写。"""
+    return _chat(ZHIPU_URL, api_key, {
+        "model": model,
+        "temperature": 0.1,
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {
+                "url": "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode()}},
+            {"type": "text", "text": prompt},
         ]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2048},
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        GEMINI_ENDPOINT.format(model=model),
-        data=body,
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-        method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            payload = json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "ignore")[:200]
-        raise RuntimeError("Gemini HTTP " + str(e.code) + "：" + detail)
-    cands = payload.get("candidates") or []
-    if not cands:
-        raise RuntimeError("Gemini 无返回：" + json.dumps(payload)[:200])
-    parts = (cands[0].get("content") or {}).get("parts") or []
-    return "".join(p.get("text", "") for p in parts)
+    }, timeout=120)
 
 
-def transcribe_one(gemini_key, image_bytes):
+def deepseek_chat(api_key, system, user_text, model=GRADE_MODEL):
+    """DeepSeek 评分／诊断。开 JSON 模式，从源头减少解析失败。"""
+    return _chat(DEEPSEEK_URL, api_key, {
+        "model": model,
+        "temperature": GRADE_TEMPERATURE,
+        "max_tokens": MAX_TOKENS,
+        "response_format": {"type": "json_object"},
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user_text}],
+    })
+
+
+def transcribe_one(zhipu_key, image_bytes):
     """单题作答图 → {transcript, ocr_flag}"""
-    text = _gemini_vision(gemini_key, P.TRANSCRIBE_PROMPT, image_bytes)
+    text = glm_vision(zhipu_key, P.TRANSCRIBE_PROMPT, image_bytes)
     obj, layer = robust_json(text)
     return {"transcript": (obj.get("transcript") or "").strip(),
             "ocr_flag": obj.get("ocr_flag") or "uncertain",
             "_layer": layer}
 
 
-def transcribe_batch(gemini_key, tasks, progress=None):
+def transcribe_batch(zhipu_key, tasks, progress=None):
     """tasks: [{student_id, qid, image_bytes}] → [{student_id, qid, transcript, ocr_flag}]"""
     results, done = [], 0
     with ThreadPoolExecutor(max_workers=CONCURRENCY) as ex:
-        futs = {ex.submit(transcribe_one, gemini_key, t["image_bytes"]): t for t in tasks}
+        futs = {ex.submit(transcribe_one, zhipu_key, t["image_bytes"]): t for t in tasks}
         for f in as_completed(futs):
             t = futs[f]
             try:
@@ -196,10 +227,10 @@ def transcribe_batch(gemini_key, tasks, progress=None):
     return results
 
 
-def grade_student(claude_key, passage, questions, transcripts):
+def grade_student(deepseek_key, passage, questions, transcripts):
     """transcripts: {qid: text} → 经代码闸门校正后的 items"""
     user = P.build_grade_prompt(passage, questions, transcripts)
-    raw = _claude(claude_key, P.GRADE_SYSTEM, user)
+    raw = deepseek_chat(deepseek_key, P.GRADE_SYSTEM, user)
     obj, layer = robust_json(raw, list_key="items")
     items = obj.get("items") or []
 
@@ -218,11 +249,11 @@ def grade_student(claude_key, passage, questions, transcripts):
     return items
 
 
-def grade_batch(claude_key, passage, questions, per_student, progress=None):
+def grade_batch(deepseek_key, passage, questions, per_student, progress=None):
     """per_student: {student_id: {qid: transcript}} → {student_id: items}"""
     out, done = {}, 0
     with ThreadPoolExecutor(max_workers=CONCURRENCY) as ex:
-        futs = {ex.submit(grade_student, claude_key, passage, questions, tr): sid
+        futs = {ex.submit(grade_student, deepseek_key, passage, questions, tr): sid
                 for sid, tr in per_student.items()}
         for f in as_completed(futs):
             sid = futs[f]
@@ -240,16 +271,16 @@ def grade_batch(claude_key, passage, questions, per_student, progress=None):
     return out
 
 
-def extract_points(claude_key, raw_answer_text):
+def extract_points(deepseek_key, raw_answer_text):
     """老师的参考答案原文 → 结构化给分点"""
-    raw = _claude(claude_key, P.POINTS_SYSTEM, P.build_points_prompt(raw_answer_text))
+    raw = deepseek_chat(deepseek_key, P.POINTS_SYSTEM, P.build_points_prompt(raw_answer_text))
     obj, layer = robust_json(raw, list_key="questions")
     return obj.get("questions") or [], layer
 
 
-def diagnose_class(claude_key, passage, questions, class_rows):
-    raw = _claude(claude_key, P.DIAGNOSE_SYSTEM,
-                  P.build_diagnose_prompt(passage, questions, class_rows))
+def diagnose_class(deepseek_key, passage, questions, class_rows):
+    raw = deepseek_chat(deepseek_key, P.DIAGNOSE_SYSTEM,
+                        P.build_diagnose_prompt(passage, questions, class_rows))
     obj, layer = robust_json(raw)
     return {"class_summary": obj.get("class_summary", ""),
             "top_issues": obj.get("top_issues", []),

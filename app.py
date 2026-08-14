@@ -11,8 +11,8 @@ st.title("📖 华文通·理")
 st.caption("阅读理解批改与错因诊断　引擎版本 " + P.ENGINE_VERSION)
 
 # 密钥自检：三样缺一样都跑不动，早说比跑到一半炸好
-need = {"db_url": "Supabase 连接串", "gemini_key": "Gemini（转录）",
-        "claude_key": "Claude（评分与诊断）"}
+need = {"db_url": "Supabase 连接串", "zhipu_key": "智谱 GLM-4V（手写转录）",
+        "deepseek_key": "DeepSeek（评分与诊断）"}
 miss = [v for k, v in need.items() if not st.secrets.get(k)]
 if miss:
     st.error("Secrets 里还缺：" + "、".join(miss) + "。到 Streamlit Cloud → Settings → Secrets 补上。")
